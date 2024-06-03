@@ -1,6 +1,7 @@
 <div align="center">
     <h1>End-to-End Posture Control with Pressure Mats</h1>
     <br />
+    Author: Celine Tchernin, MSc OST + SCAI Lab / ETHZ
     <br />
     
 Data Collection |  Artificial Neural Network |  Center of Pressure
