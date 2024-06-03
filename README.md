@@ -3,6 +3,8 @@
     <br />
     Author: Celine Tchernin, MSc OST + SCAI Lab / ETHZ
     <br />
+    <br />
+    <br />
     
 Data Collection |  Artificial Neural Network |  Center of Pressure
 :-------------------------:|:-------------------------:|:-------------------------:
