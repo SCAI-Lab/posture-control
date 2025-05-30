@@ -1,3 +1,4 @@
+from ament_index_python.packages import get_package_share_directory
 import argparse
 from dataclasses import dataclass
 from geometry_msgs.msg import Twist
@@ -10,6 +11,30 @@ from ros2_hc_msgs.msg import Pressure
 from std_msgs.msg import Int64MultiArray, Float64MultiArray
 from typing import List, Optional
 import yaml
+
+
+@dataclass
+class PostureControlConfig:
+    input_pressure_topic: str
+    output_cmd_vel_topic: str
+    output_pressure_array_topic: str
+    output_cop_array_topic: str
+
+    @staticmethod
+    def from_yaml(filepath: str) -> Optional["PostureControlConfig"]:
+        if filepath is None:
+            return None
+        assert Path(filepath).exists(), f"The file {filepath} does not exist."
+        with open(filepath, "r") as f:
+            data = yaml.safe_load(f)
+        input_topics = data["input_topics"]
+        output_topics = data["output_topics"]
+        return PostureControlConfig(
+            input_pressure_topic=input_topics["pressure_topic"],
+            output_cmd_vel_topic=output_topics["cmd_vel_topic"],
+            output_pressure_array_topic=output_topics["pressure_array_topic"],
+            output_cop_array_topic=output_topics["cop_array_topic"],
+        )
 
 
 @dataclass
@@ -57,12 +82,6 @@ class CopParams:
 
 
 @dataclass
-class VelocityCmd:
-    vx_mps: float
-    wz_radps: float
-
-
-@dataclass
 class CopCalibration:
     max_avg_pressure: np.ndarray
     baseline_pressure_sum: np.ndarray
@@ -82,11 +101,17 @@ class CopCalibration:
         return CopCalibration(
             max_avg_pressure=np.array(calib_data["max_avg_pressure"]),
             baseline_pressure_sum=np.array(calib_data["baseline_pressure_sum"]),
-            COPx_min=float(calib_data['COPx_min']),
-            COPy_min=float(calib_data['COPy_min']),
-            COPx_max=float(calib_data['COPx_max']),
-            COPy_max=float(calib_data['COPy_max']),
+            COPx_min=float(calib_data["COPx_min"]),
+            COPy_min=float(calib_data["COPy_min"]),
+            COPx_max=float(calib_data["COPx_max"]),
+            COPy_max=float(calib_data["COPy_max"]),
         )
+
+
+@dataclass
+class VelocityCmd:
+    vx_mps: float
+    wz_radps: float
 
 
 @dataclass
@@ -104,9 +129,10 @@ class CopPostureControl(Node):
     Create the publisher: the computed command velocity, the raw pressure data and the computed COP values
     """
 
-    def __init__(self, params: CopParams, calibration: Optional[CopCalibration] = None):
+    def __init__(self, config: PostureControlConfig, params: CopParams, calibration: Optional[CopCalibration] = None):
         super().__init__("pressure_based_control")
 
+        self.config = config
         self.params = params
         self.calibration = calibration
         self.w_prev = 0.0
@@ -121,15 +147,17 @@ class CopPostureControl(Node):
         self.COPy_calib: np.ndarray = []
 
         self.pressure_subscriber = self.create_subscription(
-            Pressure, "/pressure1", self.pressure_callback, 10
+            Pressure, self.config.input_pressure_topic, self.pressure_callback, 10
         )
 
-        self.cmd_velocity_publisher = self.create_publisher(Twist, "cmd_vel", 10)
+        self.cmd_velocity_publisher = self.create_publisher(
+            Twist, self.config.output_cmd_vel_topic, 10
+        )
         self.pressure_array_publisher = self.create_publisher(
-            Int64MultiArray, "pressuremat_array", 10
+            Int64MultiArray, self.config.output_pressure_array_topic, 10
         )
         self.cop_array_publisher = self.create_publisher(
-            Float64MultiArray, "COP_array", 10
+            Float64MultiArray, self.config.output_cop_array_topic, 10
         )
 
         log.debug(f"Input calibration {self.calibration}")
@@ -150,7 +178,7 @@ class CopPostureControl(Node):
         if self.calibration is None:
             self.calibration_neutral(msg.pressure)
             return
-        
+
         # Update rolling calibration buffer
         self.pressure_buffer_calibration = np.roll(
             self.pressure_buffer_calibration, -1, axis=0
@@ -238,10 +266,10 @@ class CopPostureControl(Node):
             self.calibration = CopCalibration(
                 max_avg_pressure=max_avg_pressure,
                 baseline_pressure_sum=baseline_pressure_sum,
-                COPx_min = np.nanmin(self.COPx_calib),
-                COPx_max = np.nanmax(self.COPx_calib),
-                COPy_min = np.nanmin(self.COPy_calib),
-                COPy_max = np.nanmax(self.COPy_calib),
+                COPx_min=np.nanmin(self.COPx_calib),
+                COPx_max=np.nanmax(self.COPx_calib),
+                COPy_min=np.nanmin(self.COPy_calib),
+                COPy_max=np.nanmax(self.COPy_calib),
             )
             log.info(f"Calibrated: {self.calibration}")
 
@@ -266,7 +294,9 @@ class CopPostureControl(Node):
         """
         # Calculate calibration weights (normalize by max pressure per sensor)
         epsilon = 1e-6  # small value to avoid division by zero
-        max_avg_pressure_safe = np.where(max_avg_pressure == 0, epsilon, max_avg_pressure)
+        max_avg_pressure_safe = np.where(
+            max_avg_pressure == 0, epsilon, max_avg_pressure
+        )
         calibration_weight = max(max_avg_pressure) / max_avg_pressure_safe
 
         calibration_weight = np.nan_to_num(calibration_weight, nan=0.0)
@@ -336,8 +366,12 @@ class CopPostureControl(Node):
 
         # to ensure to get a COP smaller than 1: would be
         # the case if COP is larger than the COPmax value obtained during calibration
-        COPx = self.scale_value(cop.x, self.calibration.COPx_min, self.calibration.COPx_max)
-        COPy = self.scale_value(cop.y, self.calibration.COPy_min, self.calibration.COPy_max)
+        COPx = self.scale_value(
+            cop.x, self.calibration.COPx_min, self.calibration.COPx_max
+        )
+        COPy = self.scale_value(
+            cop.y, self.calibration.COPy_min, self.calibration.COPy_max
+        )
 
         return CenterOfPressure(x=COPx, y=COPy)
 
@@ -386,15 +420,23 @@ class CopPostureControl(Node):
 
 
 def main():
-
+    share_dir = get_package_share_directory("posture_control")
     parser = argparse.ArgumentParser(
         description="Pressure-based control calibration loader"
     )
     parser.add_argument(
         "--params-file",
         type=str,
-        required=True,
+        required=False,
+        default=f"{share_dir}/config/cop_params.yaml",
         help="Path to the YAML file containing COP parameters",
+    )
+    parser.add_argument(
+        "--config-file",
+        type=str,
+        required=False,
+        default=f"{share_dir}/config/posture_control_config.yaml",
+        help="Path to the YAML file containing posture control configs",
     )
     parser.add_argument(
         "--calibration-file",
@@ -414,6 +456,7 @@ def main():
     rclpy.init()
 
     cop_pressure_control = CopPostureControl(
+        config=PostureControlConfig.from_yaml(parsed_args.config_file),
         params=CopParams.from_yaml(parsed_args.params_file),
         calibration=CopCalibration.from_yaml(calibration_file),
     )
