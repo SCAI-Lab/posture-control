@@ -1,0 +1,6 @@
+input_topics:
+  pressure_topic: '/pressure1'
+output_topics:
+  cmd_vel_topic: '/pressuremat_cmd_vel_acc'
+  pressure_array_topic: '/pressuremat_array'
+  cop_array_topic: '/COP_array'
